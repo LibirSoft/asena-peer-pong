@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Asena Peer Pong</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">◐</span>
+        <div>
+          <h1>Asena Peer Pong</h1>
+          <small id="instance-line">bağlanıyor…</small>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span class="pill" id="online-pill">● 0 çevrimiçi</span>
+        <a class="pill link" href="/api/docs/ui" target="_blank" rel="noopener">API</a>
+      </div>
+    </header>
+
+    <!-- ───────────── LOBBY ───────────── -->
+    <main id="lobby" class="view">
+      <section class="card hero">
+        <label class="field">
+          <span>Oyuncu adın</span>
+          <input id="name-input" maxlength="20" placeholder="Örn. Ayşe" autocomplete="nickname" />
+        </label>
+        <div class="row wrap">
+          <button id="quick-btn" class="primary">⚡ Hızlı eşleş</button>
+          <button id="create-btn">＋ Oda oluştur</button>
+          <label class="inline"><input type="checkbox" id="public-check" checked /> Lobide görünsün</label>
+          <label class="inline">Hedef
+            <select id="target-select">
+              <option>3</option><option>5</option><option selected>7</option><option>11</option><option>21</option>
+            </select>
+          </label>
+        </div>
+        <form id="join-form" class="row">
+          <input id="code-input" maxlength="8" placeholder="Oda kodu (K7QXA)" />
+          <button type="submit">Katıl</button>
+        </form>
+      </section>
+
+      <div class="grid">
+        <section class="card">
+          <h2>Açık odalar <small>bu sunucu</small></h2>
+          <ul id="room-list" class="list"><li class="empty">Henüz oda yok — bir tane aç!</li></ul>
+        </section>
+
+        <section class="card">
+          <h2>Eşler (peer) <small>kendi bilgisayarında çalıştıranlar</small></h2>
+          <ul id="peer-list" class="list"><li class="empty">Aynı ağda başka bir oyuncu bulunamadı.</li></ul>
+          <form id="peer-form" class="row">
+            <input id="peer-input" placeholder="192.168.1.20:3000 veya pc.tailnet.ts.net:3000" />
+            <button type="submit">Bağlan</button>
+          </form>
+          <div id="peer-rooms"></div>
+          <details class="hint">
+            <summary>Arkadaşım bana nasıl bağlanır?</summary>
+            <p>Arkadaşın şu adreslerden birini “Bağlan” kutusuna yazsın ya da doğrudan tarayıcıda açsın:</p>
+            <ul id="share-urls" class="mono"></ul>
+            <p>Aynı Wi-Fi'daysanız birbirinizi zaten otomatik görürsünüz. İnternet üzerinden oynamak için
+              port yönlendirme ya da Tailscale/ZeroTier gibi bir VPN kullanın.</p>
+          </details>
+        </section>
+
+        <section class="card">
+          <h2>Liderlik tablosu</h2>
+          <ol id="leaderboard" class="list"><li class="empty">Henüz maç oynanmadı.</li></ol>
+        </section>
+      </div>
+    </main>
+
+    <!-- ───────────── GAME ───────────── -->
+    <main id="game" class="view hidden">
+      <div class="scorebar">
+        <div class="player left"><span id="left-name">—</span><b id="left-score">0</b></div>
+        <div class="status" id="status-text">Rakip bekleniyor…</div>
+        <div class="player right"><b id="right-score">0</b><span id="right-name">—</span></div>
+      </div>
+
+      <div class="stage">
+        <canvas id="field" width="800" height="500"></canvas>
+        <div id="overlay" class="overlay hidden"></div>
+      </div>
+
+      <div class="touch-controls">
+        <button data-dir="-1">▲</button>
+        <button data-dir="1">▼</button>
+      </div>
+
+      <div class="game-bottom">
+        <section class="card">
+          <div class="row wrap">
+            <button id="ready-btn" class="primary">Hazırım</button>
+            <button id="leave-btn">Lobiye dön</button>
+            <span class="muted" id="role-text"></span>
+            <span class="muted" id="ping-text"></span>
+          </div>
+          <div class="row wrap invite">
+            <span>Oda kodu: <b class="mono" id="room-code">—</b></span>
+            <input id="invite-input" readonly />
+            <button id="copy-btn">Davet linkini kopyala</button>
+          </div>
+          <p class="muted small">Kontroller: <kbd>W</kbd>/<kbd>S</kbd> veya <kbd>↑</kbd>/<kbd>↓</kbd></p>
+        </section>
+        <section class="card chat">
+          <ul id="chat-log"></ul>
+          <form id="chat-form" class="row">
+            <input id="chat-input" maxlength="200" placeholder="Mesaj yaz…" />
+            <button type="submit">Gönder</button>
+          </form>
+        </section>
+      </div>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+    <script type="module" src="./app.ts"></script>
+  </body>
+</html>

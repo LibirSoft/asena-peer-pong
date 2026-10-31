@@ -1,0 +1,32 @@
+{
+  "name": "asena-peer-pong",
+  "version": "1.0.0",
+  "description": "Online multiplayer Pong built with AsenaJS — host it with Docker or play peer-to-peer from your own machine.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "start": "bun run src/index.ts",
+    "build": "asena build",
+    "start:prod": "bun dist/index.asena.js",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "doctor": "asena doctor"
+  },
+  "dependencies": {
+    "@asenajs/asena": "^0.12.1",
+    "@asenajs/asena-logger": "^3.0.1",
+    "@asenajs/asena-openapi": "^3.2.0",
+    "@asenajs/asena-redis": "^4.0.1",
+    "@asenajs/ergenecore": "^5.0.1",
+    "redis": "^6.3.1",
+    "reflect-metadata": "^0.2.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@asenajs/asena-cli": "^0.11.0",
+    "@types/bun": "^1.4.4",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}

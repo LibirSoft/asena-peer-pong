@@ -1,0 +1,29 @@
+# Public hosting:      docker compose up -d
+# LAN party (Linux):   docker compose --profile lan up -d   (host network → UDP discovery works)
+services:
+  pong:
+    build: .
+    image: asena-peer-pong:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      INSTANCE_NAME: ${INSTANCE_NAME:-asena-pong}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      # Behind a single reverse proxy (nginx/Traefik/Caddy) so the rate limiter sees real IPs
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      DEFAULT_TARGET_SCORE: ${DEFAULT_TARGET_SCORE:-7}
+
+  pong-lan:
+    profiles: ["lan"]
+    build: .
+    image: asena-peer-pong:latest
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PORT: ${PORT:-3000}
+      HEALTH_PORT: ${HEALTH_PORT:-3001}
+      INSTANCE_NAME: ${INSTANCE_NAME:-}
+      DISCOVERY_ENABLED: "true"
