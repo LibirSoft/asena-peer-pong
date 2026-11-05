@@ -51,16 +51,41 @@ function player(baseUrl: string, code: string, name: string) {
     ws,
     opened,
     send: (m: object) => ws.send(JSON.stringify(m)),
-    async next<T extends ServerMessage['t']>(t: T, timeout = 10_000): Promise<Extract<ServerMessage, { t: T }>> {
+    async next<T extends ServerMessage['t']>(
+      t: T,
+      timeout = 10_000,
+      predicate: (message: Extract<ServerMessage, { t: T }>) => boolean = () => true,
+    ): Promise<Extract<ServerMessage, { t: T }>> {
       const deadline = Date.now() + timeout;
       for (;;) {
-        const i = inbox.findIndex((m) => m.t === t);
+        const i = inbox.findIndex((m): m is Extract<ServerMessage, { t: T }> => m.t === t && predicate(m as Extract<ServerMessage, { t: T }>));
         if (i >= 0) return inbox.splice(i, 1)[0] as Extract<ServerMessage, { t: T }>;
         if (Date.now() > deadline) throw new Error(`timeout waiting for "${t}"`);
         await new Promise<void>((r) => {
           waiters.push(r);
           setTimeout(r, 100);
         });
+      }
+    },
+    drain<T extends ServerMessage['t']>(t: T): Array<Extract<ServerMessage, { t: T }>> {
+      const drained = inbox.filter((m): m is Extract<ServerMessage, { t: T }> => m.t === t);
+      for (let i = inbox.length - 1; i >= 0; i--) if (inbox[i].t === t) inbox.splice(i, 1);
+      return drained;
+    },
+    clear(): void {
+      inbox.length = 0;
+    },
+    async noMessage<T extends ServerMessage['t']>(
+      t: T,
+      duration: number,
+      predicate: (message: Extract<ServerMessage, { t: T }>) => boolean = () => true,
+    ): Promise<void> {
+      const deadline = Date.now() + duration;
+      while (Date.now() < deadline) {
+        if (inbox.some((m) => m.t === t && predicate(m as Extract<ServerMessage, { t: T }>))) {
+          throw new Error(`unexpected "${t}" message`);
+        }
+        await Bun.sleep(Math.min(50, Math.max(1, deadline - Date.now())));
       }
     },
   };
@@ -115,4 +140,92 @@ describe('Asena Peer Pong (full app)', () => {
     ayse.ws.close();
     mehmet.ws.close();
   }, 20_000);
+
+  test('WebSocket: seated players pause and resume a frozen match', async () => {
+    await using app = await boot();
+    const { room } = (await app.post('/api/rooms', json({ targetScore: 21 })).expectStatus(201)).json<{ room: { code: string } }>();
+    const ayse = player(app.baseUrl, room.code, 'Ayse');
+    expect((await ayse.next('welcome')).role).toBe('left');
+    const mehmet = player(app.baseUrl, room.code, 'Mehmet');
+    expect((await mehmet.next('welcome')).role).toBe('right');
+    const spectator = player(app.baseUrl, room.code, 'Zeynep');
+    expect((await spectator.next('welcome')).role).toBe('spectator');
+
+    try {
+      ayse.send({ t: 'ready' });
+      mehmet.send({ t: 'ready' });
+      await ayse.next('room', 10_000, (message) => message.room.status === 'playing');
+      const initial = await ayse.next('state');
+      ayse.clear();
+      mehmet.clear();
+      spectator.clear();
+
+      spectator.send({ t: 'pause' });
+      await ayse.noMessage('room', 200, (message) => message.room.status === 'paused');
+
+      ayse.send({ t: 'pause' });
+      const paused = await ayse.next('room', 10_000, (message) => message.room.status === 'paused');
+      expect(paused.room.pause?.by).toBe('left');
+      expect(paused.room.pausesRemaining).toEqual({ left: 1, right: 2 });
+      expect(paused.room.pause?.remainingMs).toBeGreaterThan(0);
+      expect(paused.room.pause?.remainingMs).toBeLessThanOrEqual(30_000);
+      const frozen = ayse.drain('state').at(-1) ?? initial;
+      expect(frozen).toBeDefined();
+      await ayse.noMessage('state', 250);
+
+      ayse.send({ t: 'input', dir: 1 });
+      spectator.send({ t: 'resume' });
+      await ayse.noMessage('countdown', 200);
+      await ayse.noMessage('state', 200);
+
+      mehmet.send({ t: 'resume' });
+      expect((await ayse.next('countdown', 10_000, (message) => message.n === 3)).n).toBe(3);
+      const resumed = await ayse.next('room', 10_000, (message) => message.room.status === 'playing');
+      expect(resumed.room.pausesRemaining).toEqual({ left: 1, right: 2 });
+      expect(resumed.room.pause).toBeNull();
+      const next = await ayse.next('state');
+      expect(next.s.tick).toBeGreaterThan(frozen!.s.tick);
+      expect(next.s.paddles).toEqual(frozen!.s.paddles);
+    } finally {
+      ayse.ws.close();
+      mehmet.ws.close();
+      spectator.ws.close();
+    }
+  }, 20_000);
+
+  test('WebSocket: an active pause times out into countdown and resumes automatically', async () => {
+    await using app = await boot();
+    const { room } = (await app.post('/api/rooms', json({ targetScore: 21 })).expectStatus(201)).json<{ room: { code: string } }>();
+    const ayse = player(app.baseUrl, room.code, 'Ayse');
+    await ayse.next('welcome');
+    const mehmet = player(app.baseUrl, room.code, 'Mehmet');
+    await mehmet.next('welcome');
+
+    try {
+      ayse.send({ t: 'ready' });
+      mehmet.send({ t: 'ready' });
+      await ayse.next('room', 10_000, (message) => message.room.status === 'playing');
+      const initial = await ayse.next('state');
+      ayse.clear();
+      mehmet.clear();
+
+      const pausedAt = Date.now();
+      ayse.send({ t: 'pause' });
+      const paused = await ayse.next('room', 10_000, (message) => message.room.status === 'paused');
+      expect(paused.room.pausesRemaining).toEqual({ left: 1, right: 2 });
+      const frozen = ayse.drain('state').at(-1) ?? initial;
+      expect(frozen).toBeDefined();
+
+      await ayse.next('room', 35_000, (message) => message.room.status === 'countdown');
+      expect(Date.now() - pausedAt).toBeGreaterThanOrEqual(29_000);
+      expect((await ayse.next('countdown', 5_000, (message) => message.n === 3)).n).toBe(3);
+      const resumed = await ayse.next('room', 10_000, (message) => message.room.status === 'playing');
+      expect(resumed.room.pausesRemaining).toEqual({ left: 1, right: 2 });
+      const next = await ayse.next('state');
+      expect(next.s.tick).toBeGreaterThan(frozen!.s.tick);
+    } finally {
+      ayse.ws.close();
+      mehmet.ws.close();
+    }
+  }, 50_000);
 });

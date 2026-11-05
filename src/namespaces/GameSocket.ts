@@ -14,6 +14,8 @@ const clientMessageSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('input'), dir: z.union([z.literal(-1), z.literal(0), z.literal(1)]) }),
   z.object({ t: z.literal('ready') }),
   z.object({ t: z.literal('rematch') }),
+  z.object({ t: z.literal('pause') }),
+  z.object({ t: z.literal('resume') }),
   z.object({ t: z.literal('chat'), text: z.string().trim().min(1).max(200) }),
   z.object({ t: z.literal('ping'), ts: z.number() }),
 ]);
@@ -78,6 +80,12 @@ export class GameSocket extends AsenaWebSocketService<PlayerSocketData> {
       case 'ready':
       case 'rematch':
         await this.game.playerReady(room, ws.id);
+        break;
+      case 'pause':
+        await this.game.pause(room, ws.id);
+        break;
+      case 'resume':
+        await this.game.resume(room, ws.id);
         break;
       case 'chat':
         // this.to() includes the sender and serializes the object for us.
