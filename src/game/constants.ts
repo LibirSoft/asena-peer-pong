@@ -28,6 +28,8 @@ export const TICK_RATE = 60;
 export const BROADCAST_EVERY_N_TICKS = 2; // → 30 Hz
 /** Seconds of countdown before a serve. */
 export const COUNTDOWN_SECONDS = 3;
+export const MAX_PAUSES_PER_PLAYER = 2;
+export const PAUSE_TIMEOUT_MS = 30_000;
 
 export const DEFAULT_TARGET_SCORE = 7;
 export const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';

@@ -4,7 +4,7 @@ import { emitter, type EventEmitter } from '@asenajs/asena/event';
 import { ulak, type Ulak } from '@asenajs/asena/messaging';
 import { ICoreServiceNames } from '@asenajs/asena/ioc/types';
 import type { ServerLogger } from '@asenajs/asena/logger';
-import { BROADCAST_EVERY_N_TICKS, COUNTDOWN_SECONDS, TICK_RATE } from '../game/constants';
+import { BROADCAST_EVERY_N_TICKS, COUNTDOWN_SECONDS, PAUSE_TIMEOUT_MS, TICK_RATE } from '../game/constants';
 import { PongPhysics } from '../game/PongPhysics';
 import type { ServerMessage, Side } from '../game/protocol';
 import { RoomService, type Room } from './RoomService';
@@ -13,6 +13,7 @@ interface Match {
   physics: PongPhysics;
   loop?: ReturnType<typeof setInterval>;
   countdown?: ReturnType<typeof setTimeout>;
+  pauseTimeout?: ReturnType<typeof setTimeout>;
   startedAt: number;
 }
 
@@ -71,7 +72,28 @@ export class GameService {
     if (bothReady) await this.startCountdown(room);
   }
 
+  public async pause(room: Room, socketId: string): Promise<void> {
+    const role = this.rooms.roleOf(room, socketId);
+    if (role !== 'left' && role !== 'right') return;
+    const match = this.matches.get(room.code);
+    if (!match || !this.rooms.pause(room, role)) return;
+
+    match.physics.inputs = { left: 0, right: 0 };
+    match.pauseTimeout = setTimeout(() => {
+      this.resumeMatch(room, match).catch((error) => this.logger.error('pause timeout resume failed', error));
+    }, PAUSE_TIMEOUT_MS);
+    await this.publishRoom(room);
+  }
+
+  public async resume(room: Room, socketId: string): Promise<void> {
+    const role = this.rooms.roleOf(room, socketId);
+    if (role !== 'left' && role !== 'right') return;
+    const match = this.matches.get(room.code);
+    if (match) await this.resumeMatch(room, match);
+  }
+
   public setInput(code: string, side: Side, dir: -1 | 0 | 1): void {
+    if (this.rooms.find(code)?.status === 'paused') return;
     const match = this.matches.get(code);
     if (match) match.physics.inputs[side] = dir;
   }
@@ -79,7 +101,7 @@ export class GameService {
   /** A seated player disconnected. Mid-match that is a forfeit. */
   public async playerLeft(room: Room, side: Side, name: string): Promise<void> {
     const match = this.matches.get(room.code);
-    if (match && (room.status === 'playing' || room.status === 'countdown')) {
+    if (match && (room.status === 'playing' || room.status === 'countdown' || room.status === 'paused')) {
       const winner: Side = side === 'left' ? 'right' : 'left';
       await this.finish(room, winner, 'forfeit', { side, name });
     }
@@ -96,12 +118,37 @@ export class GameService {
     const match: Match = { physics: new PongPhysics(), startedAt: Date.now() };
     this.matches.set(room.code, match);
 
+    this.rooms.resetPauses(room);
     this.rooms.setStatus(room, 'countdown');
     await this.publishRoom(room);
+    if (!this.isCurrent(room, match, 'countdown')) return;
     await this.send(room.code, { t: 'state', s: match.physics.snapshot() });
+    if (!this.isCurrent(room, match, 'countdown')) return;
+    this.runCountdown(room, match, () => this.startLoop(room, match));
+  }
 
+  private async resumeMatch(room: Room, match: Match): Promise<void> {
+    if (!this.isCurrent(room, match, 'paused')) return;
+    if (match.pauseTimeout) clearTimeout(match.pauseTimeout);
+    match.pauseTimeout = undefined;
+    if (!this.rooms.resume(room)) return;
+
+    await this.publishRoom(room);
+    if (!this.isCurrent(room, match, 'countdown')) return;
+    this.runCountdown(room, match, () => {
+      this.rooms.setStatus(room, 'playing');
+      this.publishRoom(room).catch((error) => this.logger.error('resume room publish failed', error));
+    });
+  }
+
+  private isCurrent(room: Room, match: Match, status: Room['status']): boolean {
+    return this.matches.get(room.code) === match && room.status === status;
+  }
+
+  private runCountdown(room: Room, match: Match, complete: () => void): void {
     let n = COUNTDOWN_SECONDS;
     const countdownStep = () => {
+      if (!this.isCurrent(room, match, 'countdown')) return;
       if (n > 0) {
         this.send(room.code, { t: 'countdown', n });
         n--;
@@ -109,7 +156,7 @@ export class GameService {
         return;
       }
       match.countdown = undefined;
-      this.startLoop(room, match);
+      complete();
     };
     countdownStep();
   }
@@ -122,6 +169,7 @@ export class GameService {
 
     const dt = 1 / TICK_RATE;
     match.loop = setInterval(() => {
+      if (!this.isCurrent(room, match, 'playing')) return;
       const scorer = match.physics.step(dt);
       if (scorer) {
         const score = { ...match.physics.score };
@@ -168,7 +216,8 @@ export class GameService {
     if (!match) return;
     if (match.loop) clearInterval(match.loop);
     if (match.countdown) clearTimeout(match.countdown);
-    match.loop = match.countdown = undefined;
+    if (match.pauseTimeout) clearTimeout(match.pauseTimeout);
+    match.loop = match.countdown = match.pauseTimeout = undefined;
   }
 
   /** Sends to a room; never lets a rejected promise escape a timer callback. */

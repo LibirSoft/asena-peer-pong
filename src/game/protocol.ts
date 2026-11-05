@@ -4,7 +4,7 @@
  */
 export type Side = 'left' | 'right';
 export type Role = Side | 'spectator';
-export type RoomStatus = 'waiting' | 'countdown' | 'playing' | 'finished';
+export type RoomStatus = 'waiting' | 'countdown' | 'playing' | 'paused' | 'finished';
 
 export interface PlayerView {
   name: string;
@@ -21,6 +21,8 @@ export interface RoomView {
   players: { left: PlayerView | null; right: PlayerView | null };
   spectators: number;
   createdAt: number;
+  pausesRemaining: Record<Side, number>;
+  pause: { by: Side; remainingMs: number } | null;
 }
 
 export interface GameSnapshot {
@@ -35,6 +37,8 @@ export type ClientMessage =
   | { t: 'input'; dir: -1 | 0 | 1 }
   | { t: 'ready' }
   | { t: 'rematch' }
+  | { t: 'pause' }
+  | { t: 'resume' }
   | { t: 'chat'; text: string }
   | { t: 'ping'; ts: number };
 

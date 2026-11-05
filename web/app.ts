@@ -12,6 +12,7 @@ import type {
   ServerMessage,
   Side,
 } from '../src/game/protocol';
+import { pauseCommand, pauseRemainingSeconds } from './pause';
 
 // ── tiny DOM helpers ────────────────────────────────────────────────
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -54,6 +55,8 @@ const game = {
   room: null as RoomView | null,
   snapshot: null as GameSnapshot | null,
   receivedAt: 0,
+  pauseReceivedAt: null as number | null,
+  pauseSecond: null as number | null,
   displayPaddles: { left: (FIELD.height - PADDLE.height) / 2, right: (FIELD.height - PADDLE.height) / 2 },
   dir: 0 as -1 | 0 | 1,
   pingTimer: 0 as unknown as ReturnType<typeof setInterval>,
@@ -94,7 +97,7 @@ const renderOnline = (n: number) => ($('online-pill').textContent = `● ${n} oy
 function roomItem(room: RoomView, host: string): string {
   const players = [room.players.left?.name, room.players.right?.name].filter(Boolean);
   const full = players.length === 2;
-  const busy = room.status === 'playing' || room.status === 'countdown';
+  const busy = room.status === 'playing' || room.status === 'countdown' || room.status === 'paused';
   return `<li>
     <div>
       <b>${esc(room.name)}</b> <span class="mono meta">${esc(room.code)}</span><br/>
@@ -224,6 +227,8 @@ function joinRoom(host: string, code: string): void {
     clearInterval(game.pingTimer);
     if (!game.leaving) toast('Bağlantı kapandı (oda bulunamadı ya da sunucu kapandı).');
     game.socket = null;
+    clearPauseDisplay();
+    setOverlay('');
     showView('lobby');
     history.replaceState(null, '', location.pathname);
   };
@@ -243,6 +248,8 @@ function leaveRoom(goLobby = true): void {
     game.socket = null;
   }
   clearInterval(game.pingTimer);
+  clearPauseDisplay();
+  setOverlay('');
   if (goLobby) {
     showView('lobby');
     history.replaceState(null, '', location.pathname);
@@ -261,6 +268,14 @@ function send(msg: object): void {
   if (game.socket?.readyState === WebSocket.OPEN) game.socket.send(JSON.stringify(msg));
 }
 
+function togglePause(): boolean {
+  if (!game.room || $('game').classList.contains('hidden')) return false;
+  const command = pauseCommand(game.room, game.role);
+  if (!command) return false;
+  send(command);
+  return true;
+}
+
 function onGameMessage(msg: ServerMessage): void {
   switch (msg.t) {
     case 'welcome':
@@ -275,6 +290,7 @@ function onGameMessage(msg: ServerMessage): void {
       renderRoom(msg.room);
       break;
     case 'countdown':
+      clearPauseDisplay();
       setOverlay(String(msg.n));
       break;
     case 'state':
@@ -289,6 +305,7 @@ function onGameMessage(msg: ServerMessage): void {
       renderScore(msg.score);
       break;
     case 'end': {
+      clearPauseDisplay();
       const mine = game.role === msg.winner;
       const label = game.role === 'spectator' ? `${msg.winnerName} kazandı` : mine ? 'Kazandın! 🏆' : 'Kaybettin';
       setOverlay(`${esc(label)}<small>${msg.score.left} – ${msg.score.right}${msg.reason === 'forfeit' ? ' · rakip ayrıldı' : ''}</small>`);
@@ -311,35 +328,73 @@ function onGameMessage(msg: ServerMessage): void {
 }
 
 function renderRoom(room: RoomView): void {
+  const previousStatus = game.room?.status;
   // A new match (first game or rematch) restarts the server's tick counter at 0.
   // Drop the old snapshot, otherwise every new state looks "older" and is ignored
   // → the ball and paddles freeze at the end position of the previous match.
-  if (room.status === 'countdown' && game.room?.status !== 'countdown') {
+  if (room.status === 'countdown' && previousStatus !== 'countdown' && previousStatus !== 'paused') {
     game.snapshot = null;
     game.displayPaddles = { left: (FIELD.height - PADDLE.height) / 2, right: (FIELD.height - PADDLE.height) / 2 };
   }
   game.room = room;
   $('left-name').textContent = room.players.left?.name ?? 'boş';
   $('right-name').textContent = room.players.right?.name ?? 'boş';
-  const me = game.role === 'left' || game.role === 'right' ? room.players[game.role] : null;
+  const side = game.role === 'left' || game.role === 'right' ? game.role : null;
+  const me = side ? room.players[side] : null;
   const readyBtn = $<HTMLButtonElement>('ready-btn');
-  readyBtn.disabled = !me || me.ready || room.status === 'playing' || room.status === 'countdown';
+  readyBtn.disabled = !me || me.ready || room.status === 'playing' || room.status === 'countdown' || room.status === 'paused';
   readyBtn.textContent = room.status === 'finished' ? 'Rövanş' : me?.ready ? 'Hazır ✓' : 'Hazırım';
+
+  const pauseBtn = $<HTMLButtonElement>('pause-btn');
+  const command = pauseCommand(room, game.role);
+  const pauseVisible = side !== null && (room.status === 'playing' || room.status === 'paused');
+  pauseBtn.classList.toggle('hidden', !pauseVisible);
+  pauseBtn.disabled = command === null;
+  if (room.status === 'paused') pauseBtn.textContent = 'Devam et';
+  else if (room.status === 'playing' && side) pauseBtn.textContent = `Duraklat (${room.pausesRemaining[side]})`;
 
   const both = room.players.left && room.players.right;
   const text: Record<RoomView['status'], string> = {
     waiting: both ? 'İki oyuncu da “Hazırım” desin' : 'Rakip bekleniyor — davet linkini paylaş',
     countdown: 'Başlıyor…',
     playing: `İlk ${room.targetScore} sayıya ulaşan kazanır`,
+    paused: 'Duraklatıldı',
     finished: both ? 'Maç bitti — rövanş?' : 'Maç bitti',
   };
   $('status-text').textContent = text[room.status];
+  if (room.status === 'paused' && room.pause) {
+    if (previousStatus !== 'paused') {
+      held.clear();
+      game.dir = 0;
+    }
+    game.pauseReceivedAt = performance.now();
+    game.pauseSecond = null;
+    updatePauseOverlay(game.pauseReceivedAt);
+  } else {
+    clearPauseDisplay();
+    if (previousStatus === 'paused' && room.status === 'countdown') setOverlay('');
+  }
   if (room.status === 'waiting' && !game.snapshot) setOverlay(both ? '' : '<small>Rakip bekleniyor…</small>');
 }
 
 function renderScore(score: { left: number; right: number }): void {
   $('left-score').textContent = String(score.left);
   $('right-score').textContent = String(score.right);
+}
+
+function clearPauseDisplay(): void {
+  game.pauseReceivedAt = null;
+  game.pauseSecond = null;
+}
+
+function updatePauseOverlay(now: number): void {
+  const pause = game.room?.status === 'paused' ? game.room.pause : null;
+  const receivedAt = game.pauseReceivedAt;
+  if (!pause || receivedAt === null) return;
+  const second = pauseRemainingSeconds(pause.remainingMs, receivedAt, now);
+  if (second === game.pauseSecond) return;
+  game.pauseSecond = second;
+  setOverlay(`Duraklatıldı<small>${second} saniye kaldı</small>`);
 }
 
 function setOverlay(html: string): void {
@@ -349,6 +404,7 @@ function setOverlay(html: string): void {
 }
 
 $('ready-btn').onclick = () => send({ t: game.room?.status === 'finished' ? 'rematch' : 'ready' });
+$('pause-btn').onclick = () => { togglePause(); };
 $('leave-btn').onclick = () => leaveRoom(true);
 $('copy-btn').onclick = async () => {
   const link = inviteLink();
@@ -384,6 +440,11 @@ function isTyping(): boolean {
 }
 const keyDir: Record<string, -1 | 1> ={ ArrowUp: -1, KeyW: -1, ArrowDown: 1, KeyS: 1 };
 window.addEventListener('keydown', (e) => {
+  if (e.code === 'KeyP') {
+    if (e.repeat || isTyping()) return;
+    if (togglePause()) e.preventDefault();
+    return;
+  }
   if (!keyDir[e.code] || isTyping() || $('game').classList.contains('hidden')) return;
   e.preventDefault();
   held.add(keyDir[e.code]!);
@@ -414,6 +475,7 @@ function frame(now: number): void {
 }
 
 function draw(now: number, dt: number): void {
+  updatePauseOverlay(now);
   ctx.fillStyle = '#05070a';
   ctx.fillRect(0, 0, FIELD.width, FIELD.height);
 
@@ -427,25 +489,35 @@ function draw(now: number, dt: number): void {
   ctx.setLineDash([]);
 
   const s = game.snapshot;
+  const status = game.room?.status;
+  const frozen = status === 'paused' || status === 'countdown';
   for (const side of ['left', 'right'] as const) {
-    let target = s ? s.paddles[side] : game.displayPaddles[side];
-    // Client-side prediction for my own paddle: move instantly, then converge to the server.
-    if (side === game.role && game.room?.status === 'playing') {
-      game.displayPaddles[side] += game.dir * PADDLE.speed * dt;
-      target = target + (game.displayPaddles[side] - target) * 0.6;
+    if (s && frozen) {
+      game.displayPaddles[side] = s.paddles[side];
+    } else {
+      let target = s ? s.paddles[side] : game.displayPaddles[side];
+      // Client-side prediction for my own paddle: move instantly, then converge to the server.
+      if (side === game.role && status === 'playing') {
+        game.displayPaddles[side] += game.dir * PADDLE.speed * dt;
+        target = target + (game.displayPaddles[side] - target) * 0.6;
+      }
+      game.displayPaddles[side] += (target - game.displayPaddles[side]) * Math.min(1, dt * 20);
+      game.displayPaddles[side] = Math.max(0, Math.min(FIELD.height - PADDLE.height, game.displayPaddles[side]));
     }
-    game.displayPaddles[side] += (target - game.displayPaddles[side]) * Math.min(1, dt * 20);
-    game.displayPaddles[side] = Math.max(0, Math.min(FIELD.height - PADDLE.height, game.displayPaddles[side]));
     drawPaddle(side, game.displayPaddles[side]);
   }
 
-  if (s && game.room?.status === 'playing') {
-    // Extrapolate the ball from the last snapshot (server sends 30 Hz, we draw at 60+).
-    const since = Math.min((now - game.receivedAt) / 1000, 0.08);
-    let x = s.ball.x + s.ball.vx * since;
-    let y = s.ball.y + s.ball.vy * since;
-    y = Math.max(0, Math.min(FIELD.height - BALL.size, y));
-    x = Math.max(-BALL.size, Math.min(FIELD.width, x));
+  if (s && (status === 'playing' || frozen)) {
+    let x = s.ball.x;
+    let y = s.ball.y;
+    if (status === 'playing') {
+      // Extrapolate the ball from the last snapshot (server sends 30 Hz, we draw at 60+).
+      const since = Math.min((now - game.receivedAt) / 1000, 0.08);
+      x += s.ball.vx * since;
+      y += s.ball.vy * since;
+      y = Math.max(0, Math.min(FIELD.height - BALL.size, y));
+      x = Math.max(-BALL.size, Math.min(FIELD.width, x));
+    }
     ctx.fillStyle = '#f5a524';
     ctx.shadowColor = '#f5a524';
     ctx.shadowBlur = 16;
