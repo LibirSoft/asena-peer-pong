@@ -156,10 +156,14 @@ test/                       bun test
 
 ```
 → /ws/game?room=K7QXA&name=Alice
-client → server:  input{dir} · ready · rematch · chat{text} · ping{ts}
+client → server:  input{dir} · ready · rematch · pause · resume · chat{text} · ping{ts}
 server → client:  welcome · room · countdown · state(30 Hz) · scored · end · chat · pong · error
 ```
 
+Room views use the statuses `waiting`, `countdown`, `playing`, `paused`, and `finished`. They always include `pausesRemaining` for both `left` and `right`. While paused, `pause` contains `{ by, remainingMs }`, where `remainingMs` is the server-calculated time left before automatic resume; it is `null` in every other status.
+
 ## Controls
 
-`W`/`S` or `↑`/`↓`. On touch screens, ▲/▼ buttons appear.
+Move with `W`/`S` or `↑`/`↓`. On touch screens, ▲/▼ buttons appear.
+
+Press `P` or the on-screen “Duraklat”/“Devam et” button to pause or resume. Each seated player can pause twice per match, for at most 30 seconds each time. Either seated player can resume an active pause; manual and automatic resumes both use the existing three-second countdown. Spectators cannot pause or resume.
