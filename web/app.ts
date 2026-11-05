@@ -331,6 +331,7 @@ function renderRoom(room: RoomView): void {
     waiting: both ? 'İki oyuncu da “Hazırım” desin' : 'Rakip bekleniyor — davet linkini paylaş',
     countdown: 'Başlıyor…',
     playing: `İlk ${room.targetScore} sayıya ulaşan kazanır`,
+    paused: 'Duraklatıldı',
     finished: both ? 'Maç bitti — rövanş?' : 'Maç bitti',
   };
   $('status-text').textContent = text[room.status];

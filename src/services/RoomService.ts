@@ -2,7 +2,7 @@ import { Service } from '@asenajs/asena/decorators';
 import { Inject, Value } from '@asenajs/asena/decorators/ioc';
 import { HttpException } from '@asenajs/asena/adapter';
 import { emitter, type EventEmitter } from '@asenajs/asena/event';
-import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH } from '../game/constants';
+import { MAX_PAUSES_PER_PLAYER, PAUSE_TIMEOUT_MS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH } from '../game/constants';
 import type { Role, RoomStatus, RoomView, Side } from '../game/protocol';
 
 interface PlayerSlot {
@@ -21,6 +21,9 @@ export interface Room {
   spectators: Map<string, string>; // socketId → name
   createdAt: number;
   lastActivity: number;
+  pausesRemaining: Record<Side, number>;
+  pausedBy: Side | null;
+  pauseEndsAt: number | null;
 }
 
 export interface CreateRoomInput {
@@ -61,6 +64,9 @@ export class RoomService {
       spectators: new Map(),
       createdAt: Date.now(),
       lastActivity: Date.now(),
+      pausesRemaining: { left: MAX_PAUSES_PER_PLAYER, right: MAX_PAUSES_PER_PLAYER },
+      pausedBy: null,
+      pauseEndsAt: null,
     };
     this.rooms.set(code, room);
     this.changed();
@@ -106,7 +112,7 @@ export class RoomService {
     room.lastActivity = Date.now();
 
     const side: Side | null = !room.players.left ? 'left' : !room.players.right ? 'right' : null;
-    if (side && room.status !== 'playing' && room.status !== 'countdown') {
+    if (side && room.status !== 'playing' && room.status !== 'countdown' && room.status !== 'paused') {
       room.players[side] = { socketId, name, ready: false };
       this.changed();
       return side;
@@ -152,7 +158,7 @@ export class RoomService {
   public markReady(room: Room, socketId: string): boolean {
     const role = this.roleOf(room, socketId);
     if (role !== 'left' && role !== 'right') return false;
-    if (room.status === 'playing' || room.status === 'countdown') return false;
+    if (room.status === 'playing' || room.status === 'countdown' || room.status === 'paused') return false;
 
     room.players[role]!.ready = true;
     room.lastActivity = Date.now();
@@ -160,9 +166,31 @@ export class RoomService {
     return !!room.players.left?.ready && !!room.players.right?.ready;
   }
 
+  public pause(room: Room, side: Side, now = Date.now()): boolean {
+    if (room.status !== 'playing' || room.pausesRemaining[side] === 0) return false;
+
+    room.pausesRemaining[side]--;
+    room.pausedBy = side;
+    room.pauseEndsAt = now + PAUSE_TIMEOUT_MS;
+    this.setStatus(room, 'paused');
+    return true;
+  }
+
+  public resume(room: Room): boolean {
+    if (room.status !== 'paused') return false;
+    this.setStatus(room, 'countdown');
+    return true;
+  }
+
+  public resetPauses(room: Room): void {
+    room.pausesRemaining = { left: MAX_PAUSES_PER_PLAYER, right: MAX_PAUSES_PER_PLAYER };
+    this.clearPause(room);
+  }
+
   public setStatus(room: Room, status: RoomStatus): void {
     room.status = status;
     room.lastActivity = Date.now();
+    if (status !== 'paused') this.clearPause(room);
     if (status === 'finished') {
       if (room.players.left) room.players.left.ready = false;
       if (room.players.right) room.players.right.ready = false;
@@ -175,7 +203,7 @@ export class RoomService {
     const removed: string[] = [];
     for (const room of this.rooms.values()) {
       const idle = now - room.lastActivity > maxIdleMs;
-      const active = room.status === 'playing' || room.status === 'countdown';
+      const active = room.status === 'playing' || room.status === 'countdown' || room.status === 'paused';
       if (idle && !active) {
         this.rooms.delete(room.code);
         removed.push(room.code);
@@ -185,8 +213,11 @@ export class RoomService {
     return removed;
   }
 
-  public toView(room: Room): RoomView {
+  public toView(room: Room, now = Date.now()): RoomView {
     const player = (slot: PlayerSlot | null) => (slot ? { name: slot.name, ready: slot.ready, connected: true } : null);
+    const pause = room.status === 'paused' && room.pausedBy && room.pauseEndsAt !== null
+      ? { by: room.pausedBy, remainingMs: Math.max(0, Math.min(PAUSE_TIMEOUT_MS, room.pauseEndsAt - now)) }
+      : null;
     return {
       code: room.code,
       name: room.name,
@@ -196,7 +227,14 @@ export class RoomService {
       players: { left: player(room.players.left), right: player(room.players.right) },
       spectators: room.spectators.size,
       createdAt: room.createdAt,
+      pausesRemaining: { ...room.pausesRemaining },
+      pause,
     };
+  }
+
+  private clearPause(room: Room): void {
+    room.pausedBy = null;
+    room.pauseEndsAt = null;
   }
 
   private playerCount(room: Room): number {
