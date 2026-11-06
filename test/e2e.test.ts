@@ -26,17 +26,36 @@ const json = (body: unknown): RequestInit => ({
   headers: { 'Content-Type': 'application/json' },
 });
 
-const boot = () =>
-  createTestApp({
-    adapter: createErgenecoreAdapter({ logger: silentLogger }),
-    components: [
-      ServerConfig, ExceptionMapper,
-      GlobalCorsMiddleware, ApiRateLimiterMiddleware, RequestLoggerMiddleware,
-      GameOriginMiddleware, PlayerHandshakeMiddleware,
-      InfoController, RoomController, LeaderboardController, PeerController,
-      GameSocket, LobbySocket, GameEventService, LobbyEventService,
-    ],
-  });
+const boot = async () => {
+  const initialRating = process.env.MMR_INITIAL_RATING;
+  const kFactor = process.env.MMR_K_FACTOR;
+  process.env.MMR_INITIAL_RATING = '1000';
+  process.env.MMR_K_FACTOR = '32';
+
+  try {
+    return await createTestApp({
+      adapter: createErgenecoreAdapter({ logger: silentLogger }),
+      components: [
+        ServerConfig, ExceptionMapper,
+        GlobalCorsMiddleware, ApiRateLimiterMiddleware, RequestLoggerMiddleware,
+        GameOriginMiddleware, PlayerHandshakeMiddleware,
+        InfoController, RoomController, LeaderboardController, PeerController,
+        GameSocket, LobbySocket, GameEventService, LobbyEventService,
+      ],
+    });
+  } finally {
+    if (initialRating === undefined) {
+      delete process.env.MMR_INITIAL_RATING;
+    } else {
+      process.env.MMR_INITIAL_RATING = initialRating;
+    }
+    if (kFactor === undefined) {
+      delete process.env.MMR_K_FACTOR;
+    } else {
+      process.env.MMR_K_FACTOR = kFactor;
+    }
+  }
+};
 
 /** Minimal WebSocket test client that buffers frames and can wait for one. */
 function player(baseUrl: string, code: string, name: string) {
