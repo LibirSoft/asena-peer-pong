@@ -1,7 +1,7 @@
 import { Service } from '@asenajs/asena/decorators';
 import { Inject } from '@asenajs/asena/decorators/ioc';
 import type { MatchEndedEvent } from './GameService';
-import { MmrService, type MmrUpdate } from './MmrService';
+import { MmrService, type MmrBand, type MmrUpdate } from './MmrService';
 
 export interface PlayerStats {
   name: string;
@@ -10,6 +10,7 @@ export interface PlayerStats {
   pointsFor: number;
   pointsAgainst: number;
   mmr: number;
+  band: MmrBand;
 }
 
 export interface MatchRecord extends MatchEndedEvent {
@@ -38,8 +39,20 @@ export class StatsService {
     const loser = this.entry(match.loser.name);
     const rating: MmrUpdate = winner === loser
       ? {
-          winner: { before: winner.mmr, after: winner.mmr, delta: 0 },
-          loser: { before: loser.mmr, after: loser.mmr, delta: 0 },
+          winner: {
+            before: winner.mmr,
+            after: winner.mmr,
+            delta: 0,
+            beforeBand: this.mmr.bandFor(winner.mmr),
+            afterBand: this.mmr.bandFor(winner.mmr),
+          },
+          loser: {
+            before: loser.mmr,
+            after: loser.mmr,
+            delta: 0,
+            beforeBand: this.mmr.bandFor(loser.mmr),
+            afterBand: this.mmr.bandFor(loser.mmr),
+          },
         }
       : this.mmr.update(winner.mmr, loser.mmr);
 
@@ -54,6 +67,8 @@ export class StatsService {
     loser.pointsAgainst += match.score[match.winner.side];
     winner.mmr = rating.winner.after;
     loser.mmr = rating.loser.after;
+    winner.band = rating.winner.afterBand;
+    loser.band = rating.loser.afterBand;
     this.processedMatchIds.add(match.matchId);
   }
 
@@ -75,13 +90,15 @@ export class StatsService {
     const key = name.toLowerCase();
     let stats = this.players.get(key);
     if (!stats) {
+      const initialRating = this.mmr.getInitialRating();
       stats = {
         name,
         wins: 0,
         losses: 0,
         pointsFor: 0,
         pointsAgainst: 0,
-        mmr: this.mmr.getInitialRating(),
+        mmr: initialRating,
+        band: this.mmr.bandFor(initialRating),
       };
       this.players.set(key, stats);
     }

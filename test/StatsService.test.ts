@@ -4,9 +4,9 @@ import type { MatchEndedEvent } from '../src/services/GameService';
 import { MmrService } from '../src/services/MmrService';
 import { StatsService } from '../src/services/StatsService';
 
-const make = () => {
+const make = (initialRating = 1000) => {
   const { instance: mmr } = mockComponent(MmrService, {
-    overrides: { initialRating: 1000, kFactor: 32 },
+    overrides: { initialRating, kFactor: 32 },
   });
   const { instance: stats } = mockComponent(StatsService, { overrides: { mmr } });
   return stats;
@@ -30,15 +30,15 @@ describe('StatsService', () => {
     stats.record(match({ matchId: 'match-1' }));
 
     expect(stats.leaderboard(20)).toEqual([
-      { name: 'Ayse', wins: 1, losses: 0, pointsFor: 7, pointsAgainst: 3, mmr: 1016 },
-      { name: 'Mehmet', wins: 0, losses: 1, pointsFor: 3, pointsAgainst: 7, mmr: 984 },
+      { name: 'Ayse', wins: 1, losses: 0, pointsFor: 7, pointsAgainst: 3, mmr: 1016, band: 'Usta' },
+      { name: 'Mehmet', wins: 0, losses: 1, pointsFor: 3, pointsAgainst: 7, mmr: 984, band: 'Çırak' },
     ]);
     expect(stats.recentMatches(20)).toHaveLength(1);
     expect(stats.recentMatches(20)[0]).toMatchObject({
       matchId: 'match-1',
       mmr: {
-        winner: { before: 1000, after: 1016, delta: 16 },
-        loser: { before: 1000, after: 984, delta: -16 },
+        winner: { before: 1000, after: 1016, delta: 16, beforeBand: 'Usta', afterBand: 'Usta' },
+        loser: { before: 1000, after: 984, delta: -16, beforeBand: 'Usta', afterBand: 'Çırak' },
       },
     });
   });
@@ -85,8 +85,12 @@ describe('StatsService', () => {
     expect(stats.recentMatches(20)).toHaveLength(2);
     expect(second.mmr.winner.before).toBe(first.mmr.winner.after);
     expect(second.mmr.loser.before).toBe(first.mmr.loser.after);
+    expect(second.mmr.winner.beforeBand).toBe(first.mmr.winner.afterBand);
+    expect(second.mmr.loser.beforeBand).toBe(first.mmr.loser.afterBand);
     expect(second.mmr.winner.before).toBe(1016);
     expect(second.mmr.loser.before).toBe(984);
+    expect(second.mmr.winner.beforeBand).toBe('Usta');
+    expect(second.mmr.loser.beforeBand).toBe('Çırak');
   });
 
   test('rates score and forfeit outcomes identically', () => {
@@ -110,11 +114,27 @@ describe('StatsService', () => {
     }));
 
     expect(stats.leaderboard(20)).toEqual([
-      { name: 'Ayse', wins: 1, losses: 1, pointsFor: 10, pointsAgainst: 10, mmr: 1000 },
+      { name: 'Ayse', wins: 1, losses: 1, pointsFor: 10, pointsAgainst: 10, mmr: 1000, band: 'Usta' },
     ]);
     expect(stats.recentMatches(1)[0].mmr).toEqual({
-      winner: { before: 1000, after: 1000, delta: 0 },
-      loser: { before: 1000, after: 1000, delta: 0 },
+      winner: { before: 1000, after: 1000, delta: 0, beforeBand: 'Usta', afterBand: 'Usta' },
+      loser: { before: 1000, after: 1000, delta: 0, beforeBand: 'Usta', afterBand: 'Usta' },
+    });
+  });
+
+  test('classifies a custom initial rating with the fixed bands', () => {
+    const stats = make(1500);
+
+    stats.record(match({
+      matchId: 'custom-initial',
+      winner: { side: 'left', name: 'Ayse' },
+      loser: { side: 'right', name: 'AYSE' },
+    }));
+
+    expect(stats.leaderboard(1)[0]).toMatchObject({ mmr: 1500, band: 'Efsane' });
+    expect(stats.recentMatches(1)[0].mmr).toEqual({
+      winner: { before: 1500, after: 1500, delta: 0, beforeBand: 'Efsane', afterBand: 'Efsane' },
+      loser: { before: 1500, after: 1500, delta: 0, beforeBand: 'Efsane', afterBand: 'Efsane' },
     });
   });
 

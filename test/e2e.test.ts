@@ -143,12 +143,12 @@ describe('Asena Peer Pong (full app)', () => {
     if (!winner || !loser) throw new Error('match players missing from leaderboard');
 
     expect(winner.wins).toBe(1);
-    expect(winner.mmr).toBe(1016);
-    expect(loser.mmr).toBe(984);
+    expect(winner).toMatchObject({ mmr: 1016, band: 'Usta' });
+    expect(loser).toMatchObject({ mmr: 984, band: 'Çırak' });
     expect(latest.matchId.length).toBeGreaterThan(0);
     expect(latest.mmr).toEqual({
-      winner: { before: 1000, after: 1016, delta: 16 },
-      loser: { before: 1000, after: 984, delta: -16 },
+      winner: { before: 1000, after: 1016, delta: 16, beforeBand: 'Usta', afterBand: 'Usta' },
+      loser: { before: 1000, after: 984, delta: -16, beforeBand: 'Usta', afterBand: 'Çırak' },
     });
 
     ayse.ws.close();
