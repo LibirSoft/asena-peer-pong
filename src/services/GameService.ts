@@ -10,6 +10,7 @@ import type { ServerMessage, Side } from '../game/protocol';
 import { RoomService, type Room } from './RoomService';
 
 interface Match {
+  matchId: string;
   physics: PongPhysics;
   loop?: ReturnType<typeof setInterval>;
   countdown?: ReturnType<typeof setTimeout>;
@@ -17,6 +18,7 @@ interface Match {
 }
 
 export interface MatchEndedEvent {
+  matchId: string;
   code: string;
   winner: { side: Side; name: string };
   loser: { side: Side; name: string };
@@ -93,7 +95,7 @@ export class GameService {
 
   private async startCountdown(room: Room): Promise<void> {
     this.discard(room.code);
-    const match: Match = { physics: new PongPhysics(), startedAt: Date.now() };
+    const match: Match = { matchId: crypto.randomUUID(), physics: new PongPhysics(), startedAt: Date.now() };
     this.matches.set(room.code, match);
 
     this.rooms.setStatus(room, 'countdown');
@@ -153,6 +155,7 @@ export class GameService {
     await this.publishRoom(room);
 
     const event: MatchEndedEvent = {
+      matchId: match.matchId,
       code: room.code,
       winner: { side: winner, name: nameOf(winner) },
       loser: { side: loserSide, name: nameOf(loserSide) },
