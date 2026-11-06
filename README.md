@@ -88,11 +88,76 @@ docker compose --profile lan up -d   # Linux: host network + LAN discovery
 | `TRUST_PROXY` | `false` | Let the rate limiter trust `X-Forwarded-For` |
 | `REDIS_URL` | — | When set, enables `RedisTransport` for lobby broadcasts (multi-pod) |
 | `DEFAULT_TARGET_SCORE` | `7` | Points needed to win a match |
+| `MMR_INITIAL_RATING` | `1000` | Rating used when a display name first completes a match |
+| `MMR_K_FACTOR` | `32` | K-factor used for each zero-sum Elo update |
 | `ROOM_IDLE_MINUTES` | `10` | Rooms idle for this many minutes are removed |
 
 > **Scaling note:** match state lives in the memory of the pod that owns the room. If you run several
 > pods, route `/ws/game?room=X` stickily so one room always reaches the same pod. `REDIS_URL` only
 > carries lobby broadcasts between pods.
+
+---
+
+## MMR and leaderboard
+
+`MmrService` calculates ratings and `StatsService` is the single idempotent writer for player aggregates, ratings, and match history. A display-name identity is initialized lazily at `MMR_INITIAL_RATING` (default `1000`) when its first completed match is recorded; that value is the input to the first update, not an extra unrated match.
+
+For winner rating `Rw`, loser rating `Rl`, and K-factor `K` (`MMR_K_FACTOR`, default `32`), the zero-sum Elo update is:
+
+```text
+Ew    = 1 / (1 + 10 ** ((Rl - Rw) / 400))
+delta = round(K * (1 - Ew))
+winner = Rw + delta
+loser  = Rl - delta
+```
+
+One integer delta is calculated and applied in opposite directions, so every rated two-player match is zero-sum. There is no rating floor, provisional period, or score-margin multiplier.
+
+Normal score completions and all forfeits, including a disconnect during countdown, are rated identically. Every rematch receives a fresh UUID `matchId` and is rated again from the current ratings. `StatsService` ignores an already processed `matchId` without changing aggregates, ratings, or history; processed IDs live for the process lifetime and are not evicted with the 100-row public history. Discarded rooms and matches stopped by shutdown are not rated. The game has no ties. Quick matching remains oldest-waiting-room based and does not use MMR.
+
+### Leaderboard API
+
+`GET /api/leaderboard?limit=20` adds `mmr` to every player and sorts by MMR descending, then wins descending, losses ascending, and points for descending:
+
+```json
+{
+  "players": [
+    {
+      "name": "Ayse",
+      "wins": 1,
+      "losses": 0,
+      "pointsFor": 7,
+      "pointsAgainst": 3,
+      "mmr": 1016
+    }
+  ]
+}
+```
+
+`GET /api/leaderboard/matches?limit=20` includes the unique `matchId` and an `mmr` snapshot on every recent-match record. `before`, `after`, and `delta` are fixed pre-match/post-match values for that record:
+
+```json
+{
+  "matches": [
+    {
+      "matchId": "0f6b2131-9a52-4f17-a5af-49951b16d804",
+      "code": "K7QXA",
+      "winner": { "side": "left", "name": "Ayse" },
+      "loser": { "side": "right", "name": "Mehmet" },
+      "score": { "left": 7, "right": 3 },
+      "reason": "score",
+      "durationMs": 42000,
+      "endedAt": 1760000000000,
+      "mmr": {
+        "winner": { "before": 1000, "after": 1016, "delta": 16 },
+        "loser": { "before": 1000, "after": 984, "delta": -16 }
+      }
+    }
+  ]
+}
+```
+
+Ratings, aggregates, history, and processed IDs are per-instance, in-memory state. They reset on restart and are not shared between peers or pods; Redis does not persist or synchronize them. Display names are non-authenticated, case-insensitive identities, so case variants share stats and names can be impersonated or collide. When both opponents resolve to the same identity, existing win/loss/point/history behavior is preserved and both MMR deltas are zero.
 
 ---
 
@@ -108,6 +173,7 @@ docker compose --profile lan up -d   # Linux: host network + LAN discovery
 | `@StaticServe` (`/assets/*`) + `@Hidden` | `src/controllers/AssetsController.ts` |
 | `@FrontendController` + `@Page`: an HTML import whose TypeScript Bun bundles | `src/controllers/PongFrontendController.ts`, `web/` |
 | `@Service`, `@Inject`, `@Value` (parse + default) | `src/services/*` |
+| Zero-sum Elo calculation and the idempotent stats/MMR writer | `MmrService.ts`, `StatsService.ts` |
 | `@OnStart` / `@OnStop` lifecycle (UDP socket, game loops) | `PeerDiscoveryService.ts`, `GameService.ts` |
 | Throwing `HttpException` from the service layer | `RoomService.ts`, `PeerDiscoveryService.ts` |
 | **Ulak**: sending WebSocket messages without injecting the namespace (`ulak('/ws/game')`) | `GameService.ts`, `LobbyEventService.ts`, `LobbySocket.ts` |
@@ -124,7 +190,7 @@ docker compose --profile lan up -d   # Linux: host network + LAN discovery
 | Tests: `mockComponent`, `createTestUlakStub`, `createTestApp` + a real WebSocket match | `test/` |
 | `asena build` + `include` (the HTML page and shared code) | `asena-config.ts` |
 
-Architecture rule: **Controller → Service**. Controllers stay thin: they read the request, hand it to a service and shape the response. Room rules live in `RoomService` and game rules in `GameService`. The leaderboard never talks to `GameService`; it updates by listening to the `game.match.ended` event.
+Architecture rule: **Controller → Service**. Controllers stay thin: they read the request, hand it to a service and shape the response. Room rules live in `RoomService` and game rules in `GameService`. The leaderboard never talks to `GameService`; `GameEventService` listens to `game.match.ended` and calls only `StatsService.record()`, which applies stats and `MmrService` updates once per match ID.
 
 Left out on purpose: Drizzle (database) plus Kafka and the microservice transports. They need external infrastructure, which would break the one-command `docker run`. Redis is optional and stays off unless `REDIS_URL` is set.
 
@@ -138,7 +204,7 @@ src/
   config/ exceptions/       @Config + error mapping
   contracts/                route context contracts (Context.define)
   controllers/              REST + static files + frontend page
-  services/                 Room, Game, Stats, Instance, PeerDiscovery
+  services/                 Room, Game, Stats, MMR, Instance, PeerDiscovery
   namespaces/               /ws/game, /ws/lobby
   middlewares/  events/  schedules/  openapi/
   game/                     PongPhysics (pure, testable) + shared constants/protocol
