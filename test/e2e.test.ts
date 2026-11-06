@@ -17,6 +17,7 @@ import { PlayerHandshakeMiddleware } from '../src/middlewares/PlayerHandshakeMid
 import { RequestLoggerMiddleware } from '../src/middlewares/RequestLoggerMiddleware';
 import { GameSocket } from '../src/namespaces/GameSocket';
 import { LobbySocket } from '../src/namespaces/LobbySocket';
+import type { MatchRecord, PlayerStats } from '../src/services/StatsService';
 
 process.env.DISCOVERY_ENABLED = 'false'; // no UDP sockets in tests
 
@@ -107,10 +108,29 @@ describe('Asena Peer Pong (full app)', () => {
     expect(end.reason).toBe('score');
     expect(end.score.left + end.score.right).toBe(1);
 
-    // GameEventService → StatsService recorded it (events are async; give it a tick)
-    await Bun.sleep(50);
-    const board = (await app.get('/api/leaderboard').expectStatus(200)).json<{ players: { name: string; wins: number }[] }>();
-    expect(board.players.find((p) => p.wins === 1)?.name).toBe(end.winnerName);
+    let latest: MatchRecord | undefined;
+    const deadline = Date.now() + 2_000;
+    while (!latest && Date.now() < deadline) {
+      const history = (await app.get('/api/leaderboard/matches').expectStatus(200)).json<{ matches: MatchRecord[] }>();
+      latest = history.matches.find((record) => record.winner.name === end.winnerName);
+      if (!latest) await Bun.sleep(50);
+    }
+    if (!latest) throw new Error('timeout waiting for match stats');
+
+    const board = (await app.get('/api/leaderboard').expectStatus(200)).json<{ players: PlayerStats[] }>();
+    const winner = board.players.find((player) => player.name === end.winnerName);
+    const loserName = end.winnerName === 'Ayse' ? 'Mehmet' : 'Ayse';
+    const loser = board.players.find((player) => player.name === loserName);
+    if (!winner || !loser) throw new Error('match players missing from leaderboard');
+
+    expect(winner.wins).toBe(1);
+    expect(winner.mmr).toBe(1016);
+    expect(loser.mmr).toBe(984);
+    expect(latest.matchId.length).toBeGreaterThan(0);
+    expect(latest.mmr).toEqual({
+      winner: { before: 1000, after: 1016, delta: 16 },
+      loser: { before: 1000, after: 984, delta: -16 },
+    });
 
     ayse.ws.close();
     mehmet.ws.close();
