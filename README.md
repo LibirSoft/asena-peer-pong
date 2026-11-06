@@ -113,11 +113,23 @@ loser  = Rl - delta
 
 One integer delta is calculated and applied in opposite directions, so every rated two-player match is zero-sum. There is no rating floor, provisional period, or score-margin multiplier.
 
+Every integer rating maps to exactly one fixed band:
+
+| Band | Inclusive rating rule |
+|---|---|
+| `Çırak` | `rating <= 999` |
+| `Usta` | `1000 <= rating <= 1499` |
+| `Efsane` | `rating >= 1500` |
+
+The default initial rating `1000` is the inclusive lower boundary of `Usta`. There is no rating floor, so negative ratings remain possible and are `Çırak`; `Efsane` has no upper cap. These thresholds and names are fixed, not configurable.
+
+Bands are derived from MMR only. They do not change Elo updates, numeric leaderboard ordering, match completion or idempotency, or quick matching.
+
 Normal score completions and all forfeits, including a disconnect during countdown, are rated identically. Every rematch receives a fresh UUID `matchId` and is rated again from the current ratings. `StatsService` ignores an already processed `matchId` without changing aggregates, ratings, or history; processed IDs live for the process lifetime and are not evicted with the 100-row public history. Discarded rooms and matches stopped by shutdown are not rated. The game has no ties. Quick matching remains oldest-waiting-room based and does not use MMR.
 
 ### Leaderboard API
 
-`GET /api/leaderboard?limit=20` adds `mmr` to every player and sorts by MMR descending, then wins descending, losses ascending, and points for descending:
+`GET /api/leaderboard?limit=20` adds `mmr` and its current `band` to every player and sorts by MMR descending, then wins descending, losses ascending, and points for descending. The current band reflects the player's MMR after all recorded matches:
 
 ```json
 {
@@ -128,13 +140,14 @@ Normal score completions and all forfeits, including a disconnect during countdo
       "losses": 0,
       "pointsFor": 7,
       "pointsAgainst": 3,
-      "mmr": 1016
+      "mmr": 1016,
+      "band": "Usta"
     }
   ]
 }
 ```
 
-`GET /api/leaderboard/matches?limit=20` includes the unique `matchId` and an `mmr` snapshot on every recent-match record. `before`, `after`, and `delta` are fixed pre-match/post-match values for that record:
+`GET /api/leaderboard/matches?limit=20` includes the unique `matchId` and an `mmr` snapshot on every recent-match record. `before`, `after`, and `delta` are fixed pre-match/post-match values for that record. `beforeBand` and `afterBand` classify those snapshots, not the player's later current rating:
 
 ```json
 {
@@ -149,8 +162,8 @@ Normal score completions and all forfeits, including a disconnect during countdo
       "durationMs": 42000,
       "endedAt": 1760000000000,
       "mmr": {
-        "winner": { "before": 1000, "after": 1016, "delta": 16 },
-        "loser": { "before": 1000, "after": 984, "delta": -16 }
+        "winner": { "before": 1000, "after": 1016, "delta": 16, "beforeBand": "Usta", "afterBand": "Usta" },
+        "loser": { "before": 1000, "after": 984, "delta": -16, "beforeBand": "Usta", "afterBand": "Çırak" }
       }
     }
   ]
